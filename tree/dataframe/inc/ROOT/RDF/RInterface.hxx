@@ -40,9 +40,17 @@
 #include "TH2.h" // For Histo actions
 #include "TH3.h" // For Histo actions
 #include "THn.h"
+#include "THnSparse.h"
 #include "TProfile.h"
 #include "TProfile2D.h"
 #include "TStatistic.h"
+
+// TODO: Needed to show the info message in Snapshot, remove in 6.40
+#include "ROOT/RLogger.hxx"
+#include "ROOT/RVersion.hxx"
+#include "TEnv.h"
+#include <cstdlib>
+#include <cstring>
 
 #include <algorithm>
 #include <cstddef>
@@ -1331,6 +1339,26 @@ public:
                                                  const ColumnNames_t &columnList,
                                                  const RSnapshotOptions &options = RSnapshotOptions())
    {
+      // TODO: Remove before releasing 6.40.00
+#if ROOT_VERSION_CODE >= ROOT_VERSION(6, 40, 0)
+      static_assert(false && "Remove information about change of Snapshot defaut compression settings.");
+#endif
+      [[maybe_unused]] static bool once = []() {
+         if (const char *suppress = std::getenv("ROOT_RDF_SNAPSHOT_INFO"))
+            if (std::strcmp(suppress, "0") == 0)
+               return true;
+         if (const char *suppress = gEnv->GetValue("ROOT.RDF.Snapshot.Info", "1"))
+            if (std::strcmp(suppress, "0") == 0)
+               return true;
+         RLogScopedVerbosity showInfo{ROOT::Detail::RDF::RDFLogChannel(), ROOT::ELogLevel::kInfo};
+         R__LOG_INFO(ROOT::Detail::RDF::RDFLogChannel())
+            << "\n\tIn ROOT 6.38, the default compression settings of Snapshot have been changed from 101 (ZLIB with "
+               "compression level 1, the TTree default) to 505 (ZSTD with compression level 5). This change may result "
+               "in smaller Snapshot output dataset size by default. In order to suppress this message, set "
+               "'ROOT_RDF_SNAPSHOT_INFO=0' in your environment or set 'ROOT.RDF.Snapshot.Info: 0' in your .rootrc "
+               "file.";
+         return true;
+      }();
       // like columnList but with `#var` columns removed
       auto colListNoPoundSizes = RDFInternal::FilterArraySizeColNames(columnList, "Snapshot");
       // like columnListWithoutSizeColumns but with aliases resolved
@@ -2287,6 +2315,80 @@ public:
    }
 
    ////////////////////////////////////////////////////////////////////////////
+   /// \brief Fill and return a sparse N-dimensional histogram (*lazy action*).
+   /// \tparam FirstColumn The first type of the column the values of which are used to fill the object. Inferred if not
+   /// present.
+   /// \tparam OtherColumns A list of the other types of the columns the values of which are used to fill the
+   /// object.
+   /// \param[in] model The returned histogram will be constructed using this as a model.
+   /// \param[in] columnList
+   /// A list containing the names of the columns that will be passed when calling `Fill`.
+   ///  (N columns for unweighted filling, or N+1 columns for weighted filling)
+   /// \return the N-dimensional histogram wrapped in a RResultPtr.
+   ///
+   /// This action is *lazy*: upon invocation of this method the calculation is
+   /// booked but not executed. See RResultPtr documentation.
+   ///
+   /// ### Example usage:
+   /// ~~~{.cpp}
+   /// auto myFilledObj = myDf.HistoNSparseD<float, float, float, float>({"name","title", 4,
+   ///                                                {40,40,40,40}, {20.,20.,20.,20.}, {60.,60.,60.,60.}},
+   ///                                               {"col0", "col1", "col2", "col3"});
+   /// ~~~
+   ///
+   template <typename FirstColumn, typename... OtherColumns> // need FirstColumn to disambiguate overloads
+   RResultPtr<::THnSparseD> HistoNSparseD(const THnSparseDModel &model, const ColumnNames_t &columnList)
+   {
+      std::shared_ptr<::THnSparseD> h(nullptr);
+      {
+         ROOT::Internal::RDF::RIgnoreErrorLevelRAII iel(kError);
+         h = model.GetHistogram();
+
+         if (int(columnList.size()) == (h->GetNdimensions() + 1)) {
+            h->Sumw2();
+         } else if (int(columnList.size()) != h->GetNdimensions()) {
+            throw std::runtime_error("Wrong number of columns for the specified number of histogram axes.");
+         }
+      }
+      return CreateAction<RDFInternal::ActionTags::HistoNSparseD, FirstColumn, OtherColumns...>(columnList, h, h,
+                                                                                                fProxiedPtr);
+   }
+
+   ////////////////////////////////////////////////////////////////////////////
+   /// \brief Fill and return a sparse N-dimensional histogram (*lazy action*).
+   /// \param[in] model The returned histogram will be constructed using this as a model.
+   /// \param[in] columnList A list containing the names of the columns that will be passed when calling `Fill`
+   ///  (N columns for unweighted filling, or N+1 columns for weighted filling)
+   /// \return the N-dimensional histogram wrapped in a RResultPtr.
+   ///
+   /// This action is *lazy*: upon invocation of this method the calculation is
+   /// booked but not executed. Also see RResultPtr.
+   ///
+   /// ### Example usage:
+   /// ~~~{.cpp}
+   /// auto myFilledObj = myDf.HistoNSparseD({"name","title", 4,
+   ///                                                {40,40,40,40}, {20.,20.,20.,20.}, {60.,60.,60.,60.}},
+   ///                                               {"col0", "col1", "col2", "col3"});
+   /// ~~~
+   ///
+   RResultPtr<::THnSparseD> HistoNSparseD(const THnSparseDModel &model, const ColumnNames_t &columnList)
+   {
+      std::shared_ptr<::THnSparseD> h(nullptr);
+      {
+         ROOT::Internal::RDF::RIgnoreErrorLevelRAII iel(kError);
+         h = model.GetHistogram();
+
+         if (int(columnList.size()) == (h->GetNdimensions() + 1)) {
+            h->Sumw2();
+         } else if (int(columnList.size()) != h->GetNdimensions()) {
+            throw std::runtime_error("Wrong number of columns for the specified number of histogram axes.");
+         }
+      }
+      return CreateAction<RDFInternal::ActionTags::HistoNSparseD, RDFDetail::RInferredType>(
+         columnList, h, h, fProxiedPtr, columnList.size());
+   }
+
+   ////////////////////////////////////////////////////////////////////////////
    /// \brief Fill and return a TGraph object (*lazy action*).
    /// \tparam X The type of the column used to fill the x axis.
    /// \tparam Y The type of the column used to fill the y axis.
@@ -2788,6 +2890,8 @@ public:
    ///
    /// If T is not specified, RDataFrame will infer it from the data and just-in-time compile the correct
    /// template specialization of this method.
+   /// Note that internally, the summations are executed with Kahan sums in double precision, irrespective
+   /// of the type of column that is read.
    ///
    /// This action is *lazy*: upon invocation of this method the calculation is
    /// booked but not executed. Also see RResultPtr.

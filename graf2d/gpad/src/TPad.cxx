@@ -1251,7 +1251,7 @@ Int_t TPad::DistancetoPrimitive(Int_t px, Int_t py)
 ///             points to the current pad. One can use gPad to set attributes
 ///             of the current pad.
 ///
-/// __Note3:__  in case xmargin <=0 and ymargin <= 0, there is no space
+/// __Note3:__  in case xmargin < 0 or ymargin < 0, there is no space
 ///             between pads. The current pad margins are recomputed to
 ///             optimize the layout.
 
@@ -1277,7 +1277,7 @@ void TPad::Divide(Int_t nx, Int_t ny, Float_t xmargin, Float_t ymargin, Int_t co
    TString name, title;
    Int_t n = 0;
    if (color == 0) color = GetFillColor();
-   if (xmargin > 0 && ymargin > 0) {
+   if (xmargin >= 0 && ymargin >= 0) {
       //general case
       dy = 1/Double_t(ny);
       dx = 1/Double_t(nx);
@@ -1298,7 +1298,7 @@ void TPad::Divide(Int_t nx, Int_t ny, Float_t xmargin, Float_t ymargin, Int_t co
          }
       }
    } else {
-      // special case when xmargin <= 0 && ymargin <= 0
+      // special case when xmargin < 0 or ymargin < 0
       Double_t xl = GetLeftMargin();
       Double_t xr = GetRightMargin();
       Double_t yb = GetBottomMargin();
@@ -1327,7 +1327,7 @@ void TPad::Divide(Int_t nx, Int_t ny, Float_t xmargin, Float_t ymargin, Int_t co
             if (j == ny-1) y1 = 0;
             name.Form("%s_%d", GetName(), number);
             title.Form("%s_%d", GetTitle(), number);
-            pad = new TPad(name.Data(), title.Data(), x1, y1, x2, y2);
+            pad = new TPad(name.Data(), title.Data(), x1, y1, x2, y2, color);
             pad->SetNumber(number);
             pad->SetBorderMode(0);
             if (i == 0)    pad->SetLeftMargin(xl*nx);
@@ -7465,7 +7465,7 @@ void TPad::Modified(Bool_t flag)
 ////////////////////////////////////////////////////////////////////////////////
 /// Convert absolute pixel into X/Y coordinates
 
-void TPad::AbsPixeltoXY(Int_t xpixel, Int_t ypixel, Double_t &x, Double_t &y)
+void TPad::AbsPixeltoXY(Double_t xpixel, Double_t ypixel, Double_t &x, Double_t &y)
 {
    x = AbsPixeltoX(xpixel);
    y = AbsPixeltoY(ypixel);
@@ -7475,7 +7475,7 @@ void TPad::AbsPixeltoXY(Int_t xpixel, Int_t ypixel, Double_t &x, Double_t &y)
 ////////////////////////////////////////////////////////////////////////////////
 /// Convert pixel to X coordinate
 
-Double_t TPad::PixeltoX(Int_t px)
+Double_t TPad::PixeltoX(Double_t px)
 {
    if (fAbsCoord) return fAbsPixeltoXk + px*fPixeltoX;
    else           return fPixeltoXk    + px*fPixeltoX;
@@ -7484,7 +7484,7 @@ Double_t TPad::PixeltoX(Int_t px)
 ////////////////////////////////////////////////////////////////////////////////
 /// Convert pixel to Y coordinate
 
-Double_t TPad::PixeltoY(Int_t py)
+Double_t TPad::PixeltoY(Double_t py)
 {
    if (fAbsCoord) return fAbsPixeltoYk + py*fPixeltoY;
    else           return fPixeltoYk    + py*fPixeltoY;
@@ -7493,14 +7493,14 @@ Double_t TPad::PixeltoY(Int_t py)
 ////////////////////////////////////////////////////////////////////////////////
 /// Convert pixel to X/Y coordinates
 
-void TPad::PixeltoXY(Int_t xpixel, Int_t ypixel, Double_t &x, Double_t &y)
+void TPad::PixeltoXY(Double_t xpixel, Double_t ypixel, Double_t &x, Double_t &y)
 {
    x = PixeltoX(xpixel);
    y = PixeltoY(ypixel);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// Convert X/Y into absolute pixel coordinates
+/// Convert X/Y into absolute pixel coordinates - integer
 
 void TPad::XYtoAbsPixel(Double_t x, Double_t y, Int_t &xpixel, Int_t &ypixel) const
 {
@@ -7509,7 +7509,25 @@ void TPad::XYtoAbsPixel(Double_t x, Double_t y, Int_t &xpixel, Int_t &ypixel) co
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// Convert X/Y into pixel coordinates
+/// Check value for valid range for pixel values
+
+Double_t pixel_boundary(Double_t v)
+{
+   return v < -kMaxPixel ? -kMaxPixel : (v > kMaxPixel ? kMaxPixel : v);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Convert X/Y into absolute pixel coordinates - doble
+/// Introduced to avoid pixel rounding problems
+
+void TPad::XYtoAbsPixel(Double_t x, Double_t y, Double_t &xpixel, Double_t &ypixel) const
+{
+   xpixel = pixel_boundary(fXtoAbsPixelk + x*fXtoPixel);
+   ypixel = pixel_boundary(fYtoAbsPixelk + y*fYtoPixel);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Convert X/Y into pixel coordinates - integer
 
 void TPad::XYtoPixel(Double_t x, Double_t y, Int_t &xpixel, Int_t &ypixel) const
 {
@@ -7518,16 +7536,20 @@ void TPad::XYtoPixel(Double_t x, Double_t y, Int_t &xpixel, Int_t &ypixel) const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// Convert X/Y into pixel coordinates - double
+
+void TPad::XYtoPixel(Double_t x, Double_t y, Double_t &xpixel, Double_t &ypixel) const
+{
+   xpixel = pixel_boundary(fAbsCoord ? fXtoAbsPixelk + x*fXtoPixel : fXtoPixelk + x*fXtoPixel);
+   ypixel = pixel_boundary(fAbsCoord ? fYtoAbsPixelk + y*fYtoPixel : fYtoPixelk + y*fYtoPixel);
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// Convert X NDC to pixel
 
 Int_t TPad::UtoPixel(Double_t u) const
 {
-   Double_t val;
-   if (fAbsCoord) val = fUtoAbsPixelk + u*fUtoPixel;
-   else           val = u*fUtoPixel;
-   if (val < -kMaxPixel) return -kMaxPixel;
-   if (val >  kMaxPixel) return  kMaxPixel;
-   return TMath::Nint(val);
+   return TMath::Nint(pixel_boundary(fAbsCoord ? fUtoAbsPixelk + u*fUtoPixel : fUtoPixelk + u*fUtoPixel));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -7535,12 +7557,7 @@ Int_t TPad::UtoPixel(Double_t u) const
 
 Int_t TPad::VtoPixel(Double_t v) const
 {
-   Double_t val;
-   if (fAbsCoord) val = fVtoAbsPixelk + v*fVtoPixel;
-   else           val = fVtoPixelk    + v*fVtoPixel;
-   if (val < -kMaxPixel) return -kMaxPixel;
-   if (val >  kMaxPixel) return  kMaxPixel;
-   return TMath::Nint(val);
+   return TMath::Nint(pixel_boundary(fAbsCoord ? fVtoAbsPixelk + v*fVtoPixel : fVtoPixelk + v*fVtoPixel));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -7564,10 +7581,7 @@ Int_t TPad::VtoAbsPixel(Double_t v) const
 
 Int_t TPad::XtoAbsPixel(Double_t x) const
 {
-   Double_t val = fXtoAbsPixelk + x*fXtoPixel;
-   if (val < -kMaxPixel) return -kMaxPixel;
-   if (val >  kMaxPixel) return  kMaxPixel;
-   return TMath::Nint(val);
+   return TMath::Nint(pixel_boundary(fXtoAbsPixelk + x*fXtoPixel));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -7575,12 +7589,7 @@ Int_t TPad::XtoAbsPixel(Double_t x) const
 
 Int_t TPad::XtoPixel(Double_t x) const
 {
-   Double_t val;
-   if (fAbsCoord) val = fXtoAbsPixelk + x*fXtoPixel;
-   else           val = fXtoPixelk    + x*fXtoPixel;
-   if (val < -kMaxPixel) return -kMaxPixel;
-   if (val >  kMaxPixel) return  kMaxPixel;
-   return TMath::Nint(val);
+   return TMath::Nint(pixel_boundary(fAbsCoord ? fXtoAbsPixelk + x*fXtoPixel : fXtoPixelk + x*fXtoPixel));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -7588,10 +7597,7 @@ Int_t TPad::XtoPixel(Double_t x) const
 
 Int_t TPad::YtoAbsPixel(Double_t y) const
 {
-   Double_t val = fYtoAbsPixelk + y*fYtoPixel;
-   if (val < -kMaxPixel) return -kMaxPixel;
-   if (val >  kMaxPixel) return  kMaxPixel;
-   return TMath::Nint(val);
+   return TMath::Nint(pixel_boundary(fYtoAbsPixelk + y*fYtoPixel));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -7599,10 +7605,5 @@ Int_t TPad::YtoAbsPixel(Double_t y) const
 
 Int_t TPad::YtoPixel(Double_t y) const
 {
-   Double_t val;
-   if (fAbsCoord) val = fYtoAbsPixelk + y*fYtoPixel;
-   else           val = fYtoPixelk    + y*fYtoPixel;
-   if (val < -kMaxPixel) return -kMaxPixel;
-   if (val >  kMaxPixel) return  kMaxPixel;
-   return TMath::Nint(val);
+   return TMath::Nint(pixel_boundary(fAbsCoord ? fYtoAbsPixelk + y*fYtoPixel : fYtoPixelk + y*fYtoPixel));
 }

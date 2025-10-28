@@ -169,6 +169,31 @@ bool ROOT::RFieldDescriptor::IsCustomClass() const
    return true;
 }
 
+bool ROOT::RFieldDescriptor::IsCustomEnum(const RNTupleDescriptor &desc) const
+{
+   if (fStructure != ROOT::ENTupleStructure::kPlain)
+      return false;
+   if (fTypeName.rfind("std::", 0) == 0)
+      return false;
+
+   auto subFieldId = desc.FindFieldId("_0", fFieldId);
+   if (subFieldId == kInvalidDescriptorId)
+      return false;
+
+   static const std::string gIntTypeNames[] = {"bool",         "char",          "std::int8_t",  "std::uint8_t",
+                                               "std::int16_t", "std::uint16_t", "std::int32_t", "std::uint32_t",
+                                               "std::int64_t", "std::uint64_t"};
+   return std::find(std::begin(gIntTypeNames), std::end(gIntTypeNames),
+                    desc.GetFieldDescriptor(subFieldId).GetTypeName()) != std::end(gIntTypeNames);
+}
+
+bool ROOT::RFieldDescriptor::IsStdAtomic() const
+{
+   if (fStructure != ROOT::ENTupleStructure::kPlain)
+      return false;
+   return (fTypeName.rfind("std::atomic<", 0) == 0);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 bool ROOT::RColumnDescriptor::operator==(const RColumnDescriptor &other) const
@@ -785,6 +810,8 @@ ROOT::RNTupleDescriptor ROOT::RNTupleDescriptor::Clone() const
    clone.fSortedClusterGroupIds = fSortedClusterGroupIds;
    for (const auto &d : fClusterDescriptors)
       clone.fClusterDescriptors.emplace(d.first, d.second.Clone());
+   for (const auto &d : fAttributeSets)
+      clone.fAttributeSets.emplace_back(d.Clone());
    return clone;
 }
 
@@ -1105,6 +1132,19 @@ void ROOT::Internal::RNTupleDescriptorBuilder::SetFeature(unsigned int flag)
    fDescriptor.fFeatureFlags.insert(flag);
 }
 
+ROOT::RResult<ROOT::Experimental::RNTupleAttrSetDescriptor>
+ROOT::Experimental::Internal::RNTupleAttrSetDescriptorBuilder::MoveDescriptor()
+{
+   if (fDesc.fName.empty())
+      return R__FAIL("attribute set name cannot be empty");
+   if (fDesc.fAnchorLength == 0)
+      return R__FAIL("invalid anchor length");
+   if (fDesc.fAnchorLocator.GetType() == RNTupleLocator::kTypeUnknown)
+      return R__FAIL("invalid locator type");
+
+   return std::move(fDesc);
+}
+
 ROOT::RResult<ROOT::RColumnDescriptor> ROOT::Internal::RColumnDescriptorBuilder::MakeDescriptor() const
 {
    if (fColumn.GetLogicalId() == ROOT::kInvalidDescriptorId)
@@ -1359,6 +1399,19 @@ void ROOT::Internal::RNTupleDescriptorBuilder::ReplaceExtraTypeInfo(RExtraTypeIn
       fDescriptor.fExtraTypeInfoDescriptors.emplace_back(std::move(extraTypeInfoDesc));
 }
 
+ROOT::RResult<void>
+ROOT::Internal::RNTupleDescriptorBuilder::AddAttributeSet(Experimental::RNTupleAttrSetDescriptor &&attrSetDesc)
+{
+   auto &attrSets = fDescriptor.fAttributeSets;
+   if (std::find_if(attrSets.begin(), attrSets.end(), [&name = attrSetDesc.GetName()](const auto &desc) {
+          return desc.GetName() == name;
+       }) != attrSets.end()) {
+      return R__FAIL("attribute sets with duplicate names");
+   }
+   attrSets.push_back(std::move(attrSetDesc));
+   return RResult<void>::Success();
+}
+
 RNTupleSerializer::StreamerInfoMap_t ROOT::Internal::RNTupleDescriptorBuilder::BuildStreamerInfos() const
 {
    RNTupleSerializer::StreamerInfoMap_t streamerInfoMap;
@@ -1473,4 +1526,27 @@ ROOT::RNTupleDescriptor::RClusterDescriptorIterable ROOT::RNTupleDescriptor::Get
 ROOT::RNTupleDescriptor::RExtraTypeInfoDescriptorIterable ROOT::RNTupleDescriptor::GetExtraTypeInfoIterable() const
 {
    return RExtraTypeInfoDescriptorIterable(*this);
+}
+
+ROOT::Experimental::RNTupleAttrSetDescriptorIterable ROOT::RNTupleDescriptor::GetAttrSetIterable() const
+{
+   return Experimental::RNTupleAttrSetDescriptorIterable(*this);
+}
+
+bool ROOT::Experimental::RNTupleAttrSetDescriptor::operator==(const RNTupleAttrSetDescriptor &other) const
+{
+   return fAnchorLength == other.fAnchorLength && fSchemaVersionMajor == other.fSchemaVersionMajor &&
+          fSchemaVersionMinor == other.fSchemaVersionMinor && fAnchorLocator == other.fAnchorLocator &&
+          fName == other.fName;
+};
+
+ROOT::Experimental::RNTupleAttrSetDescriptor ROOT::Experimental::RNTupleAttrSetDescriptor::Clone() const
+{
+   RNTupleAttrSetDescriptor desc;
+   desc.fAnchorLength = fAnchorLength;
+   desc.fSchemaVersionMajor = fSchemaVersionMajor;
+   desc.fSchemaVersionMinor = fSchemaVersionMinor;
+   desc.fAnchorLocator = fAnchorLocator;
+   desc.fName = fName;
+   return desc;
 }

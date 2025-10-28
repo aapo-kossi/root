@@ -4696,13 +4696,13 @@ void TGraphPainter::PaintPolyLineHatches(TGraph *theGraph, Int_t n, const Double
       } else {
          a1  = TMath::ATan((yi1-yi0)/(xi1-xi0));
       }
-      if (xi1<xi0) a1 = a1+3.14159;
+      if (xi1<xi0) a1 = a1+TMath::Pi();
       if (xi2==xi0) {
          a2 = TMath::PiOver2();
       } else {
          a2  = TMath::ATan((yi0-yi2)/(xi0-xi2));
       }
-      if (xi0<xi2) a2 = a2+3.14159;
+      if (xi0<xi2) a2 = a2+TMath::Pi();
       x1 = xi0-w*TMath::Sin(a1);
       y1 = yi0+w*TMath::Cos(a1);
       x2 = xi0-w*TMath::Sin(a2);
@@ -4714,8 +4714,8 @@ void TGraphPainter::PaintPolyLineHatches(TGraph *theGraph, Int_t n, const Double
       } else {
          a3 = TMath::ATan((ym-yi0)/(xm-xi0));
       }
-      x3 = xi0-w*TMath::Sin(a3+1.57079);
-      y3 = yi0+w*TMath::Cos(a3+1.57079);
+      x3 = xi0-w*TMath::Sin(a3+TMath::PiOver2());
+      y3 = yi0+w*TMath::Cos(a3+TMath::PiOver2());
       // Rotate (x3,y3) by PI around (xi0,yi0) if it is not on the (xm,ym) side.
       if ((xm-xi0)*(x3-xi0)<0 && (ym-yi0)*(y3-yi0)<0) {
          x3 = 2*xi0-x3;
@@ -4738,8 +4738,8 @@ void TGraphPainter::PaintPolyLineHatches(TGraph *theGraph, Int_t n, const Double
       } else {
          a3 = TMath::ATan((ym-yf[0])/(xm-xf[0]));
       }
-      x3 = xf[0]+w*TMath::Sin(a3+1.57079);
-      y3 = yf[0]-w*TMath::Cos(a3+1.57079);
+      x3 = xf[0]+w*TMath::Sin(a3+TMath::PiOver2());
+      y3 = yf[0]-w*TMath::Cos(a3+TMath::PiOver2());
       if ((xm-xf[0])*(x3-xf[0])<0 && (ym-yf[0])*(y3-yf[0])<0) {
          x3 = 2*xf[0]-x3;
          y3 = 2*yf[0]-y3;
@@ -4754,20 +4754,21 @@ void TGraphPainter::PaintPolyLineHatches(TGraph *theGraph, Int_t n, const Double
    Double_t xc, yc, c1, b1, c2, b2;
    Bool_t cross = kFALSE;
    Int_t nf2 = nf;
+   const Double_t eps = 1e-12; // float precision
    for (i=nf2; i>0; i--) {
       for (j=i-1; j>0; j--) {
-         if (xt[i-1]==xt[i] || xt[j-1]==xt[j]) continue;
+         if (TMath::Abs(xt[i-1]-xt[i]) < eps || TMath::Abs(xt[j-1]-xt[j]) < eps) continue;
          c1  = (yt[i-1]-yt[i])/(xt[i-1]-xt[i]);
          b1  = yt[i]-c1*xt[i];
          c2  = (yt[j-1]-yt[j])/(xt[j-1]-xt[j]);
          b2  = yt[j]-c2*xt[j];
-         if (c1 != c2) {
+         if (TMath::Abs(c1 - c2) > eps) {
             xc = (b2-b1)/(c1-c2);
             yc = c1*xc+b1;
-            if (xc>TMath::Min(xt[i],xt[i-1]) && xc<TMath::Max(xt[i],xt[i-1]) &&
-                xc>TMath::Min(xt[j],xt[j-1]) && xc<TMath::Max(xt[j],xt[j-1]) &&
-                yc>TMath::Min(yt[i],yt[i-1]) && yc<TMath::Max(yt[i],yt[i-1]) &&
-                yc>TMath::Min(yt[j],yt[j-1]) && yc<TMath::Max(yt[j],yt[j-1])) {
+            if (xc>TMath::Min(xt[i],xt[i-1])+eps && xc<TMath::Max(xt[i],xt[i-1])-eps &&
+                xc>TMath::Min(xt[j],xt[j-1])+eps && xc<TMath::Max(xt[j],xt[j-1])-eps &&
+                yc>TMath::Min(yt[i],yt[i-1])+eps && yc<TMath::Max(yt[i],yt[i-1])-eps &&
+                yc>TMath::Min(yt[j],yt[j-1])+eps && yc<TMath::Max(yt[j],yt[j-1])-eps) {
                nf++; xf[nf] = xt[i]; yf[nf] = yt[i];
                nf++; xf[nf] = xc   ; yf[nf] = yc;
                i = j;

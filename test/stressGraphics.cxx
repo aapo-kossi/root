@@ -29,7 +29,9 @@
 //    root [0] .x  stressGraphics.cxx
 
 #include <cstdlib>
-#include <Riostream.h>
+#include <iostream>
+#include <iomanip>
+#include <fstream>
 #include <ctime>
 #include <string>
 #include <map>
@@ -64,6 +66,7 @@
 #include <TColor.h>
 #include <TFrame.h>
 #include <TPostScript.h>
+#include <TSVG.h>
 #include <TPDF.h>
 #include <TLine.h>
 #include <TMarker.h>
@@ -97,11 +100,16 @@
 
 
 const int kMaxNumTests = 70;
+const int  kFineSvgTest = 10; // SVG file can slightly vary
+const int  kSkipSvgTest = 100; // do not perform SVG test
 
 // Global variables.
 Int_t     gVerbose = 0;
 Int_t     gTestNum = 0;
 Int_t     gTestsFailed = 0;
+Bool_t    gSvgMode = kFALSE;
+Bool_t    gSvgCompact = kTRUE;
+std::string gSvgRefPath;
 Bool_t    gWebMode = kFALSE;
 Bool_t    gSkip3D = kFALSE;
 Bool_t    gOptionR = kFALSE;
@@ -153,9 +161,9 @@ std::map<int, RefEntry> gRef;
 
 struct TestEntry {
    Int_t TestNum = 0;
-   TString title, psfile, ps2file, pdffile, jpgfile, pngfile, ccode;
+   TString title, psfile, ps2file, pdffile, jpgfile, pngfile, svgfile, ccode;
    Bool_t execute_ccode = kFALSE;
-   Int_t IPS = 0;
+   Int_t IPS = 0, testsvg = 0;
 };
 
 std::vector<TestEntry> gReports;
@@ -258,6 +266,112 @@ Int_t FileSize(const TString &filename)
    }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+/// Check if deviation in SVG line significant or can be ignored
+
+bool SpecialCompareOfSVGLines(const std::string &line1, const std::string &line2)
+{
+   if (line1.length() != line2.length())
+      return false;
+
+   int npos = -1;
+
+   // for now allow only one single deviation deviation
+   for (size_t i = 0; i < line1.length(); ++i) {
+      if (line1[i] != line2[i]) {
+         if (npos < 0)
+            npos = i;
+         else
+            return false;
+      }
+   }
+
+   if (npos < 0)
+      return true;
+
+   auto extract_float = [npos](const std::string &s) {
+      int n = npos;
+      while ((n > 0) && ((s[n]>='0' && s[n] <= '9') || (s[n] == '.') || (s[n] == '-'))) n--;
+      float res;
+      if (sscanf(s.c_str() + n + 1, "%f", &res) != 1)
+         res = 0.;
+      return res;
+   };
+
+   auto v1 = extract_float(line1);
+   auto v2 = extract_float(line2);
+
+   if (!v1 || !v2 || (v1*v2 < 0))
+      return false;
+
+   return (TMath::Abs(v2 - v1) / (v2 + v1) < 0.01);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Special compare of SVG files
+
+Int_t CompareSVGFiles(const TString &filename1, const TString &filename2, int testsvg)
+{
+   std::ifstream f1(filename1.Data());
+   if (!f1) {
+      printf("FAILURE to open %s\n", filename1.Data());
+      return 0;
+   }
+
+   std::ifstream f2(filename2.Data());
+   if (!f2) {
+      printf("FAILURE to open %s\n", filename2.Data());
+      return 0;
+   }
+
+   std::string line1, line2;
+
+   int cnt = 0, diffcnt = 0, finediffcnt = 0;
+
+   while (std::getline(f1, line1) && std::getline(f2, line2)) {
+      ++cnt;
+
+      if (line1 == line2)
+         continue;
+
+      // ignore CreationDate comment
+      if (!gSvgCompact && (cnt == 8))
+         continue;
+
+      printf("Diff in line %d", cnt);
+      if (line1.length() != line2.length())
+         printf("  len1: %d len2: %d\n", (int) line1.length(), (int) line2.length());
+      else
+         printf("\n");
+      printf("Ref: %s\n", line1.substr(0, 200).c_str());
+      printf("New: %s\n", line2.substr(0, 200).c_str());
+      if ((testsvg == kFineSvgTest) && SpecialCompareOfSVGLines(line1, line2)) {
+         if (finediffcnt++ > 5)
+            return 0;
+      } else if (++diffcnt > 5)
+         return 0;
+   }
+
+   if (diffcnt > 0)
+      return 0;
+
+   if (!f1.eof()) {
+      printf("FAILURE ref file %s still has content\n", filename1.Data());
+      printf("Diff in line %d\n", cnt);
+      printf("Ref: %s\n", line1.substr(0, 200).c_str());
+      return 0;
+   }
+
+   if (std::getline(f2, line2) || !f2.eof()) {
+      printf("FAILURE new file %s still has content\n", filename2.Data());
+      printf("Diff in line %d\n", cnt);
+      printf("New: %s\n", line2.substr(0, 200).c_str());
+      return 0;
+   }
+
+   return (finediffcnt > 0) ? kFineSvgTest : 1;
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Analyse the PS file "filename" and return the number of character in the
@@ -312,6 +426,7 @@ TCanvas *StartTest(Int_t w, Int_t h)
 
 void TestReport(TCanvas *C, const TString &title, const TString &arg = "", Int_t IPS = 0)
 {
+
    if (!gVerbose)
       gErrorIgnoreLevel = 9999;
 
@@ -320,51 +435,61 @@ void TestReport(TCanvas *C, const TString &title, const TString &arg = "", Int_t
    TestEntry e;
    e.TestNum = gTestNum;
    e.title = title;
-   e.IPS = gWebMode ? 1 : IPS; // check only size of web SVG files
+   if (IPS < kSkipSvgTest)
+      e.testsvg = (IPS  < kFineSvgTest) ? 1 : kFineSvgTest;
+
+   e.IPS = gWebMode ? 1 : IPS % 10; // check only size of web SVG files
    e.psfile = TString::Format("%s1_%2.2d.%s", filePrefix, e.TestNum, main_extension);
    e.ps2file = TString::Format("%s2_%2.2d.%s", filePrefix, e.TestNum, main_extension);
    e.pdffile = TString::Format("%s%2.2d.pdf", filePrefix, e.TestNum);
    e.jpgfile = TString::Format("%s%2.2d.jpg", filePrefix, e.TestNum);
    e.pngfile = TString::Format("%s%2.2d.png", filePrefix, e.TestNum);
+   e.svgfile = TString::Format("%s%2.2d.svg", filePrefix, e.TestNum);
    e.ccode = TString::Format("%s%2.2d.C", filePrefix, e.TestNum);
    e.execute_ccode = (arg != kSkipCCode);
 
    // start files generation
-
-   if (gWebMode) {
-      C->SaveAs(e.psfile);
-
-      C->SaveAs(e.pdffile);
+   if (gSvgMode) {
+      TSVG svg(e.svgfile, 111, gSvgCompact);
+      C->cd(0);
+      C->Draw();
+      svg.Close();
    } else {
-      TPostScript ps1(e.psfile, 111);
-      C->cd(0);
-      C->Draw();
-      ps1.Close();
+      if (gWebMode) {
+         C->SaveAs(e.psfile);
 
-      TPDF pdf(e.pdffile, 111);
-      C->cd(0);
-      C->Draw();
-      pdf.Close();
-   }
+         C->SaveAs(e.pdffile);
+      } else {
+         TPostScript ps1(e.psfile, 111);
+         C->cd(0);
+         C->Draw();
+         ps1.Close();
 
-   C->cd(0);
-   C->SaveAs(e.jpgfile);
-
-   C->cd(0);
-   C->SaveAs(e.pngfile);
-
-   if (e.execute_ccode) {
-      C->SaveAs(e.ccode);
-      delete C;
-      C = nullptr;
-
-      if (!arg.IsNull()) {
-         auto old = gDirectory->GetList()->FindObject(arg);
-         if (old) gDirectory->GetList()->Remove(old);
+         TPDF pdf(e.pdffile, 111);
+         C->cd(0);
+         C->Draw();
+         pdf.Close();
       }
 
-      gROOT->ProcessLine(".x " + e.ccode);
-      gPad->SaveAs(e.ps2file);
+      C->cd(0);
+      C->SaveAs(e.jpgfile);
+
+      C->cd(0);
+      C->SaveAs(e.pngfile);
+
+      if (e.execute_ccode) {
+         C->SaveAs(e.ccode);
+         delete C;
+         C = nullptr;
+
+         if (!arg.IsNull() && e.testsvg) {
+            auto old = gDirectory->GetList()->FindObject(arg);
+            if (old) gDirectory->GetList()->Remove(old);
+         }
+
+         gROOT->ProcessLine(".x " + e.ccode);
+         gPad->SaveAs(e.ps2file);
+      }
    }
 
    gReports.emplace_back(e);
@@ -417,6 +542,43 @@ void print_reports()
 
    for (auto &e : gReports) {
 
+      if (gSvgMode) {
+
+         Int_t res = 1;
+         if (e.testsvg)
+            res = CompareSVGFiles(gSvgRefPath + e.svgfile, e.svgfile, e.testsvg);
+
+         if (!res) {
+            auto filesize = FileSize(e.svgfile);
+            auto filesize0 = FileSize(gSvgRefPath + e.svgfile);
+            std::cout <<"     Result = " << filesize << "   Reference = " << filesize0 << "  difference = " << (filesize - filesize0) << "\n";
+         }
+
+         TString line = TString::Format("Test %2d: %s", e.TestNum, e.title.Data());
+         Int_t nch = line.Length();
+
+         std::cout << line;
+         for (Int_t i = nch; i < 67; i++)
+            std::cout << ".";
+
+         if (res) {
+            if (!e.testsvg)
+               std::cout << " SKIP\n";
+            else if (res == kFineSvgTest)
+               std::cout << " NEAR\n";
+            else
+               std::cout << " OK\n";
+            if (!gOptionK)
+               gSystem->Unlink(e.svgfile);
+         } else {
+            gTestsFailed++;
+            std::cout << " FAILED\n";
+            if (gOptionK)
+               gSystem->CopyFile(e.svgfile, gSvgRefPath + e.svgfile, true);
+         }
+         continue;
+      }
+
       auto& ref = gRef[e.TestNum];
 
       StatusPrint(e.psfile, 1, e.title, e.TestNum, e.IPS ? FileSize(e.psfile) : AnalysePS(e.psfile), ref.ps1ref, ref.ps1err);
@@ -428,7 +590,7 @@ void print_reports()
       StatusPrint(e.pngfile, 0, "  PNG output", e.TestNum, FileSize(e.pngfile), ref.pngref, ref.pngerr);
 
       if (e.execute_ccode) {
-         Int_t ret_code = StatusPrint(e.psfile, -1, "  C file result", e.TestNum,
+         Int_t ret_code = StatusPrint(e.ps2file, -1, "  C file result", e.TestNum,
                                     e.IPS ? FileSize(e.ps2file) : AnalysePS(e.ps2file), ref.ps2ref, ref.ps2err);
 
 #ifndef __CLING__
@@ -963,7 +1125,7 @@ void tmathtext()
    l.DrawMathText(0.27, 0.110, "\\mathbb{N} \\subset \\mathbb{R}");
    l.DrawMathText(0.63, 0.100, "\\hbox{RHIC スピン物理 Нью-Йорк}");
 
-   TestReport(C, "TMathText", "", 1);
+   TestReport(C, "TMathText", "", 1 + kSkipSvgTest);
 }
 
 
@@ -1233,8 +1395,10 @@ void tgaxis4()
    TCanvas *C = StartTest(600,700);
 
    TDatime T0(2003,1,1,0,0,0);
+
    int X0 = T0.Convert();
    gStyle->SetTimeOffset(X0);
+
    TDatime T1(2002,9,23,0,0,0);
    int X1 = T1.Convert()-X0;
    TDatime T2(2003,3,7,0,0,0);
@@ -1250,7 +1414,8 @@ void tgaxis4()
    h1->GetXaxis()->SetTimeFormat("%Y:%m:%d");
    h1->Draw();
 
-   TestReport(C, "TGaxis 4 (Time on axis)");
+   // test output differs on different platforms therefore skip it for the time been
+   TestReport(C, "TGaxis 4 (Time on axis)", "", kSkipSvgTest);
    delete h1;
 }
 
@@ -1264,8 +1429,15 @@ TString stime(time_t* t, bool utc = false, bool display_time_zone = true)
    if (utc) tt = gmtime(t);
    else     tt = localtime(t);
    char buf[256];
-   if (display_time_zone) strftime(buf, sizeof(buf), "%H:%M:%S %Z", tt);
-   else                   strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tt);
+   if (!display_time_zone)
+      strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tt);
+   else if (utc)
+      // different platforms (especially Windows) place different time zone specifier
+      // instead %Z for GMT time, so put GMT directly
+      strftime(buf, sizeof(buf), "%H:%M:%S GMT", tt);
+   else
+      strftime(buf, sizeof(buf), "%H:%M:%S %Z", tt);
+
    return TString(buf);
 }
 
@@ -1305,9 +1477,11 @@ void tgaxis5()
    l.DrawLine(0.5, 0, 0.5, 1.);
 
    for(int i = 0; i < 4; ++i){
-      for(int gmt = 0; gmt < 2; ++gmt){
-         const char* opt = (gmt ? "gmt" : "local");
-         TVirtualPad* p = C->cd(2*i + gmt + 1);
+      for(int gg = 0; gg < 2; ++gg) {
+         // in SVG mode always use global time to create reproducible output
+         int gmt = gg || gSvgMode ? 1 : 0;
+         const char* opt = gmt ? "gmt" : "local";
+         TVirtualPad* p = C->cd(2*i + gg + 1);
          p->SetTopMargin(0); p->SetBottomMargin(0);
          p->SetLeftMargin(0); p->SetRightMargin(0);
          p->SetFillStyle(4000);
@@ -1334,7 +1508,7 @@ void tgaxis5()
          char buf[bufSize];
          if (offset[i] < t[i]) {
             snprintf(buf, bufSize, "#splitline{%s, %s}{offset: %ld, option %s}",
-                    stime(t+i).Data(), stime(t+i, true).Data(), (long) offset[i], opt);
+                    stime(t+i, gSvgMode).Data(), stime(t+i, true).Data(), (long) offset[i], opt);
          } else {
             int h = t[i] / 3600;
             int m = (t[i] - 3600 * h) / 60 ;
@@ -1702,6 +1876,7 @@ void tgraph3()
 
    C->cd(1);
    g1->Fit("gaus","Q");
+   g1->GetFunction("gaus")->SetParameters(162.343237, -1525754.596742, 548632.482040);
    g1->Draw("AP");
    gPad->SetLogx();
 
@@ -1946,6 +2121,8 @@ void tmultigraph2()
    gr22->SetMarkerColor(kRed+1);
    gr22->SetMarkerStyle(20);
    gr22->Fit("pol3","q ex0");
+   // fix parameters to avoid deviation on different platforms
+   gr22->GetFunction("pol3")->SetParameters(4.830338, 13.642697, 5.092961, -21.695969);
    mg2->Add(gr21,"pl");
    mg2->Add(gr22);
    mg2->Draw("ap");
@@ -1961,6 +2138,10 @@ void tmultigraph2()
    gr32->SetMarkerColor(kRed-1);
    gr32->SetMarkerStyle(20);
    gr32->Fit("pol4","q ex0");
+   // fix parameters and errors to avoid deviation on different platforms
+   gr32->GetFunction("pol4")->SetParameters(3.800743, 16.072495, 17.267410, -58.828117, 24.041571);
+   gr32->GetFunction("pol4")->SetParError(4, 8.834);
+
    mg3->Add(gr31,"pl");
    mg3->Add(gr32);
    mg3->Draw("ap");
@@ -1976,6 +2157,10 @@ void tmultigraph2()
    gr42->SetMarkerColor(kViolet);
    gr42->SetMarkerStyle(20);
    gr42->Fit("pol5","q ex0");
+   // fix parameters and errors to avoid deviation on different platforms
+   gr42->GetFunction("pol5")->SetParameters(3.784774, 16.245375, 17.266562, -60.768103, 27.670699, -1.851469);
+   Double_t pol5_errors[6] = { 0.48664, 3.23538, 5.22816, 35.7405, 62.6138, 31.6462 };
+   gr42->GetFunction("pol5")->SetParErrors(pol5_errors);
    mg4->Add(gr41,"pc");
    mg4->Add(gr42);
    mg4->Draw("ap");
@@ -2164,7 +2349,7 @@ void earth()
    C->cd(3); h3->Draw("z sinusoidal");
    C->cd(4); h4->Draw("z parabolic");
 
-   TestReport(C, "Special contour options (AITOFF etc.)");
+   TestReport(C, "Special contour options (AITOFF etc.)", "", kSkipSvgTest);
    delete h1;
    delete h2;
    delete h3;
@@ -2208,7 +2393,7 @@ void tgraph2d1()
    dt->SetMarkerSize(1);
    dt->Draw("tri2p0Z  ");
 
-   TestReport(C, "TGraph2D 1 (TRI2 and P0)", dt->GetName());
+   TestReport(C, "TGraph2D 1 (TRI2 and P0)", dt->GetName(), kSkipSvgTest);
 
    delete dt;
 }
@@ -2348,7 +2533,7 @@ void tprofile3d()
       hprof3d->Fill(px, py, pz, pt, 1);
    }
    hprof3d->Draw();
-   TestReport(C, "TProfile3D");
+   TestReport(C, "TProfile3D", "", kSkipSvgTest);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2465,7 +2650,7 @@ void ntuple1()
    l4->Draw();
    gStyle->SetStatColor(19);
 
-   TestReport(C, "Ntuple drawing and TPad");
+   TestReport(C, "Ntuple drawing and TPad", "", kSkipSvgTest);
 }
 
 
@@ -2634,6 +2819,7 @@ void zoomfit()
 
    TH1 *hpx = (TH1*)gHsimple->Get("hpx");
    hpx->Fit("gaus","q");
+   hpx->GetFunction("gaus")->SetParameters(800.107852, -0.003862, 0.994740);
    hpx->GetXaxis()->SetRangeUser(.1,.3);
    gPad->Modified();
    gPad->Update();
@@ -2696,13 +2882,13 @@ void parallelcoord()
 {
    TCanvas *C = StartTest(800,700);
 
-   TNtuple *ntuple = (TNtuple*)gHsimple->Get("ntuple");
+   auto ntuple = static_cast<TNtuple *>(gHsimple->Get("ntuple"));
 
    C->Divide(1,2);
 
    C->cd(1);
    ntuple->Draw("px:py:pz:random:px*py*pz","","para");
-   TParallelCoord* para = (TParallelCoord*)gPad->GetListOfPrimitives()->FindObject("ParaCoord");
+   auto para = static_cast<TParallelCoord *> (gPad->GetListOfPrimitives()->FindObject("ParaCoord"));
    para->SetLineColor(25);
    TColor *col25 = gROOT->GetColor(25);
    if (col25) col25->SetAlpha(0.05);
@@ -2710,7 +2896,9 @@ void parallelcoord()
    C->cd(2);
    ntuple->Draw("px:py:pz:random:px*py*pz","","candle");
 
-   TestReport(C, "Parallel Coordinates");
+   TestReport(C, "Parallel Coordinates", "", kFineSvgTest);
+
+   if (col25) col25->SetAlpha(1.);
 }
 
 
@@ -3235,14 +3423,16 @@ void stressGraphics(Int_t verbose = 0, Bool_t generate = kFALSE, Bool_t keep_fil
    if (!gVerbose)
       gErrorIgnoreLevel = 0;
 
-   const char *ref_name = "stressGraphics.ref", *ref_kind = "    ";
+   const char *ref_name = "stressGraphics.ref", *ref_kind = "       ";
    if (gWebMode) {
       ref_name = "stressGraphics_web.ref";
-      ref_kind = " WEB";
+      ref_kind = gSvgMode ? "WEB SVG" : "    WEB";
+   } else if (gSvgMode) {
+      ref_kind = "    SVG";
    } else {
 #ifdef R__HAS_CLOUDFLARE_ZLIB
       ref_name = "stressGraphics_builtinzlib.ref";
-      ref_kind = "ZLIB";
+      ref_kind = "   ZLIB";
 #endif
    }
 
@@ -3255,7 +3445,7 @@ void stressGraphics(Int_t verbose = 0, Bool_t generate = kFALSE, Bool_t keep_fil
       PrintRefHeader();
    } else {
       std::cout << "**********************************************************************\n";
-      std::cout << "*  Starting  Graphics - S T R E S S suite                       " << ref_kind << " *\n";
+      std::cout << "*  Starting  Graphics - S T R E S S suite                    " << ref_kind << " *\n";
    }
 
    gTestNum     = 0;
@@ -3384,7 +3574,11 @@ void stressGraphics(Int_t verbose = 0, Bool_t generate = kFALSE, Bool_t keep_fil
       gBenchmark->Print("stressGraphics");
 
       Double_t rootmarks = 1.;
-      if (gWebMode) {
+      if (gSvgMode) {
+         Double_t ct = gBenchmark->GetCpuTime("stressGraphics");
+         //normalize at 3945 rootmarks on hades58
+         rootmarks = 3945.*(0.99/ct);
+      } else if (gWebMode) {
          Double_t rt = gBenchmark->GetRealTime("stressGraphics");
          //normalize at 2692 rootmarks on AMD Ryzen 9 3900X with chromium browser
          rootmarks = 2692.*(52.36/rt);
@@ -3395,7 +3589,7 @@ void stressGraphics(Int_t verbose = 0, Bool_t generate = kFALSE, Bool_t keep_fil
       }
 
       printf("**********************************************************************\n");
-      printf("*  ROOTMARKS =%6.1f   *  Root %-8s  %d/%d\n",rootmarks,gROOT->GetVersion(),
+      printf("*  ROOTMARKS = %6.1f  *  Root %-8s  %d/%d\n",rootmarks,gROOT->GetVersion(),
              gROOT->GetVersionDate(),gROOT->GetVersionTime());
       printf("**********************************************************************\n");
    }
@@ -3467,8 +3661,16 @@ int main(int argc, char *argv[])
          return 0;
       } else if (!strcmp(argv[i], "-k"))
          keep = kTRUE;
-      else if (strstr(argv[i], "-p="))
-         filePrefix = argv[i]+3;
+      else if (!strncmp(argv[i], "--svg=", 6)) {
+         gSvgMode = kTRUE;
+         gSvgCompact = kTRUE;
+         gSvgRefPath = argv[i] + 6;
+      } else if (!strncmp(argv[i], "--svg0=", 7)) {
+         gSvgMode = kTRUE;
+         gSvgCompact = kFALSE;
+         gSvgRefPath = argv[i] + 7;
+      } else if (strstr(argv[i], "-p="))
+         filePrefix = argv[i] + 3;
       else if (strstr(argv[i], "-skip3d"))
          gSkip3D = kTRUE;
       else if (!strcmp(argv[i], "-h")) {
@@ -3481,6 +3683,8 @@ int main(int argc, char *argv[])
          printf("       By default output files for passed tests are deleted.\n");
          printf("  -p=prefix: Provide custom prefix for generated files, default \"sg\"\n");
          printf("  -skip3d : skip 3D testing.\n");
+         printf("  -svg=<path/to/ref/files> : check compact SVG files.\n");
+         printf("  -svg0=<path/to/ref/files> : check normal SVG files.\n");
          printf("  -v : increase verbosity.\n");
          printf("  --web=chrome|firefox|off : Configure web mode\n");
          printf("  -h : Print usage\n");

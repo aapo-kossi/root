@@ -86,6 +86,7 @@ You can directly see RDataFrame in action in our [tutorials](https://root.cern/d
    - [Creating an RDataFrame from a dataset specification file](\ref rdf-from-spec)
    - [Adding a progress bar](\ref progressbar)
    - [Working with missing values in the dataset](\ref missing-values)
+   - [Dealing with NaN or Inf values in the dataset](\ref special-values)
 - [Python interface](classROOT_1_1RDataFrame.html#python)
 - <a class="el" href="classROOT_1_1RDataFrame.html#reference" onclick="javascript:toggleInherit('pub_methods_classROOT_1_1RDF_1_1RInterface')">Class reference</a>
 
@@ -135,6 +136,7 @@ produce many different results in one event loop. Instant actions trigger the ev
 | GraphAsymmErrors() | Fills a TGraphAsymmErrors. Should be used for any type of graph with errors, including cases with errors on one of the axes only. If multi-threading is enabled, the order of the points may not be the one expected, it is therefore suggested to sort if before drawing. |
 | Histo1D(), Histo2D(), Histo3D() | Fill a one-, two-, three-dimensional histogram with the processed column values. |
 | HistoND() | Fill an N-dimensional histogram with the processed column values. |
+| HistoNSparseD() | Fill an N-dimensional sparse histogram with the processed column values. Memory is allocated only for non-empty bins. |
 | Max() | Return the maximum of processed column values. If the type of the column is inferred, the return type is `double`, the type of the column otherwise.|
 | Mean() | Return the mean of processed column values.|
 | Min() | Return the minimum of processed column values. If the type of the column is inferred, the return type is `double`, the type of the column otherwise.|
@@ -737,7 +739,7 @@ parts of the RDataFrame API currently work with this package. The subset that is
 - FilterMissing
 - Graph
 - Histo[1,2,3]D
-- HistoND
+- HistoND, HistoNSparseD
 - Max
 - Mean
 - Min
@@ -1855,6 +1857,17 @@ df_filtered.Display({"twice"})->Print();
 Note that working with missing values is currently supported with a TTree-based
 data source. Support of this functionality for other data sources may come in
 the future.
+
+\anchor special-values
+### Dealing with NaN or Inf values in the dataset
+
+RDataFrame does not treat NaNs or infinities beyond what the floating-point standards require, i.e. they will
+propagate to the final result.
+Non-finite numbers can be suppressed using Filter(), e.g.:
+
+\code{.py}
+df.Filter("std::isfinite(x)").Mean("x")
+\endcode
 
 */
 // clang-format on
